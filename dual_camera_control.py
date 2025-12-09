@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """
-双相机同步控制工具
-支持同时拍照、录制视频，视频内嵌时间码
+双相机同步控制工具（优化版）
+支持同时拍照、录制视频，自动保持30fps
 适用于任务3f的双视角同步拍摄
 """
 
 import cv2
-import numpy as np
-import threading
 import time
 import os
 from datetime import datetime
 import argparse
-from queue import Queue
-import json
 
 class DualCameraController:
     def __init__(self, camera1_id, camera2_id, camera1_name="Camera1", camera2_name="Camera2"):
@@ -40,39 +36,19 @@ class DualCameraController:
         self.video_writer1 = None
         self.video_writer2 = None
         
-        # 同步时间戳
+        # 帧率控制（简化版）
         self.start_time = None
-        self.frame_timestamps = []
-        
-        # 帧率控制
         self.target_fps = 30.0
-        self.frame_interval = 1.0 / 30.0  # 每帧间隔（秒）
-        self.last_frame_time = None
+        self.frame_interval = 1.0 / 30.0
         self.frame_count = 0
-        self.dropped_frames = 0
-        self.duplicated_frames = 0
         
         # 上一帧缓存（用于掉帧时重复）
         self.last_frame1 = None
         self.last_frame2 = None
-        self.last_timestamp1 = None
-        self.last_timestamp2 = None
-        
-        # 帧率统计
-        self.fps_stats = {
-            "total_frames": 0,
-            "dropped_frames": 0,
-            "duplicated_frames": 0,
-            "actual_fps": 0.0
-        }
         
         # 输出目录
         self.output_dir = "dual_camera_output"
         os.makedirs(self.output_dir, exist_ok=True)
-        
-        # 帧队列（用于多线程）
-        self.frame_queue1 = Queue(maxsize=10)
-        self.frame_queue2 = Queue(maxsize=10)
         
     def initialize_cameras(self, width=1280, height=720, fps=30):
         """初始化两个相机"""
@@ -115,52 +91,6 @@ class DualCameraController:
         
         return (actual_width1, actual_height1), (actual_width2, actual_height2)
     
-    def add_timestamp(self, frame, timestamp, elapsed_time=None):
-        """
-        在帧上添加时间码
-        
-        参数:
-            frame: 图像帧
-            timestamp: 时间戳字符串
-            elapsed_time: 从开始录制经过的时间（秒）
-        """
-        h, w = frame.shape[:2]
-        display_frame = frame.copy()
-        
-        # 背景矩形（半透明）
-        overlay = display_frame.copy()
-        cv2.rectangle(overlay, (10, 10), (w - 10, 100), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, display_frame, 0.4, 0, display_frame)
-        
-        # 显示时间戳
-        cv2.putText(display_frame, f"Time: {timestamp}",
-                   (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
-        # 显示经过时间
-        if elapsed_time is not None:
-            elapsed_str = f"Elapsed: {elapsed_time:.3f}s"
-            cv2.putText(display_frame, elapsed_str,
-                       (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
-        return display_frame
-    
-    def capture_frame(self, cap, queue):
-        """从相机捕获帧（用于多线程）"""
-        while True:
-            ret, frame = cap.read()
-            if ret:
-                if not queue.full():
-                    queue.put((ret, frame, time.time()))
-                else:
-                    # 队列满时，丢弃最旧的帧
-                    try:
-                        queue.get_nowait()
-                        queue.put((ret, frame, time.time()))
-                    except:
-                        pass
-            else:
-                queue.put((False, None, time.time()))
-                break
     
     def capture_sync_photos(self):
         """同时拍摄两张照片"""
@@ -193,17 +123,6 @@ class DualCameraController:
         print(f"✓ 照片已保存:")
         print(f"  {filename1}")
         print(f"  {filename2}")
-        
-        # 保存同步信息
-        sync_info = {
-            "timestamp": timestamp,
-            "camera1_file": filename1,
-            "camera2_file": filename2,
-            "datetime": datetime.now().isoformat()
-        }
-        sync_file = os.path.join(self.output_dir, f"sync_{timestamp}.json")
-        with open(sync_file, 'w') as f:
-            json.dump(sync_info, f, indent=2)
         
         return True
     
@@ -259,38 +178,12 @@ class DualCameraController:
         
         self.recording = True
         self.start_time = time.time()
-        self.last_frame_time = self.start_time
-        self.frame_timestamps = []
-        
-        # 重置统计信息
         self.frame_count = 0
-        self.dropped_frames = 0
-        self.duplicated_frames = 0
-        self.fps_stats = {
-            "total_frames": 0,
-            "dropped_frames": 0,
-            "duplicated_frames": 0,
-            "actual_fps": 0.0
-        }
         
         print(f"✓ 开始录制:")
         print(f"  {filename1}")
         print(f"  {filename2}")
-        print(f"  目标帧率: {self.target_fps} fps")
         print(f"  按 'r' 键停止录制")
-        
-        # 保存录制信息
-        record_info = {
-            "start_time": datetime.now().isoformat(),
-            "camera1_file": filename1,
-            "camera2_file": filename2,
-            "target_fps": self.target_fps,
-            "resolution1": [w1, h1],
-            "resolution2": [w2, h2]
-        }
-        record_file = os.path.join(self.output_dir, f"record_{timestamp}.json")
-        with open(record_file, 'w') as f:
-            json.dump(record_info, f, indent=2)
         
         return True
     
@@ -312,90 +205,36 @@ class DualCameraController:
         self.video_writer2 = None
         
         elapsed = time.time() - self.start_time
-        actual_fps = self.frame_count / elapsed if elapsed > 0 else 0
         
         print(f"\n✓ 录制已停止")
         print(f"  录制时长: {elapsed:.2f} 秒")
         print(f"  总帧数: {self.frame_count} 帧")
-        print(f"  目标帧率: {self.target_fps} fps")
-        print(f"  实际帧率: {actual_fps:.2f} fps")
-        print(f"  掉帧数: {self.dropped_frames} 帧")
-        print(f"  重复帧数: {self.duplicated_frames} 帧")
-        
-        # 保存时间戳信息和统计
-        if self.frame_timestamps:
-            timestamp_file = os.path.join(self.output_dir, 
-                                        f"timestamps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-            with open(timestamp_file, 'w') as f:
-                json.dump({
-                    "start_time": self.start_time,
-                    "frame_timestamps": self.frame_timestamps,
-                    "total_frames": self.frame_count,
-                    "target_fps": self.target_fps,
-                    "actual_fps": actual_fps,
-                    "dropped_frames": self.dropped_frames,
-                    "duplicated_frames": self.duplicated_frames,
-                    "duration": elapsed
-                }, f, indent=2)
-            print(f"  时间戳已保存: {timestamp_file}")
         
         self.start_time = None
-        self.last_frame_time = None
-        self.frame_timestamps = []
         self.last_frame1 = None
         self.last_frame2 = None
         
         return True
     
-    def record_frame(self, frame1, frame2, timestamp1, timestamp2, elapsed, is_duplicate=False):
+    def record_frame(self, frame1, frame2):
         """
-        录制一帧（带时间码）
+        录制一帧（简化版，无时间码）
         
         参数:
             frame1: 相机1的帧
             frame2: 相机2的帧
-            timestamp1: 相机1的时间戳
-            timestamp2: 相机2的时间戳
-            elapsed: 从开始录制经过的时间
-            is_duplicate: 是否为重复帧（用于掉帧处理）
         """
         if not self.recording:
             return
         
-        # 生成时间戳字符串
-        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        
-        # 添加时间码到帧
-        frame1_with_tc = self.add_timestamp(frame1, timestamp_str, elapsed)
-        frame2_with_tc = self.add_timestamp(frame2, timestamp_str, elapsed)
-        
-        # 写入视频
-        self.video_writer1.write(frame1_with_tc)
-        self.video_writer2.write(frame2_with_tc)
+        # 直接写入视频（不添加时间码）
+        self.video_writer1.write(frame1)
+        self.video_writer2.write(frame2)
         self.frame_count += 1
         
         # 更新上一帧缓存
         self.last_frame1 = frame1.copy()
         self.last_frame2 = frame2.copy()
-        self.last_timestamp1 = timestamp1
-        self.last_timestamp2 = timestamp2
-        
-        # 记录时间戳
-        self.frame_timestamps.append({
-            "frame_num": self.frame_count - 1,
-            "timestamp1": timestamp1,
-            "timestamp2": timestamp2,
-            "elapsed": elapsed,
-            "datetime": timestamp_str,
-            "is_duplicate": is_duplicate
-        })
-        
-        # 更新统计信息
-        if elapsed > 0:
-            self.fps_stats["actual_fps"] = self.frame_count / elapsed
-        self.fps_stats["total_frames"] = self.frame_count
-        self.fps_stats["dropped_frames"] = self.dropped_frames
-        self.fps_stats["duplicated_frames"] = self.duplicated_frames
     
     def run_interactive(self):
         """运行交互式控制界面"""
@@ -407,7 +246,7 @@ class DualCameraController:
         print("  'r' - 开始/停止录制")
         print("  'q' - 退出")
         print("  'i' - 显示相机信息")
-        print("\n提示: 录制时视频会内嵌时间码")
+        print("\n提示: 录制时自动保持30fps，掉帧时自动补齐")
         print("="*60 + "\n")
         
         window1 = f"{self.camera1_name} - Dual Camera Control"
@@ -431,17 +270,12 @@ class DualCameraController:
                         frame2 = self.last_frame2.copy()
                         ret1 = True
                         ret2 = True
-                        self.dropped_frames += 1
                     else:
                         print("错误: 无法读取帧")
                         break
                 
                 # 如果正在录制，进行帧率控制
                 if self.recording:
-                    # 计算应该写入帧的时间
-                    if self.last_frame_time is None:
-                        self.last_frame_time = current_time
-                    
                     # 计算应该写入的帧数（基于经过时间）
                     elapsed = current_time - self.start_time
                     expected_frame_num = int(elapsed * self.target_fps)
@@ -449,65 +283,19 @@ class DualCameraController:
                     
                     # 如果落后了，需要写入帧
                     if frames_behind > 0:
-                        timestamp1 = time.time()
-                        timestamp2 = time.time()
-                        
                         # 写入当前帧
-                        self.record_frame(frame1, frame2, timestamp1, timestamp2, elapsed, is_duplicate=False)
+                        self.record_frame(frame1, frame2)
                         
                         # 如果落后多帧，重复写入上一帧以保持30fps
                         if frames_behind > 1:
-                            for i in range(frames_behind - 1):
+                            for _ in range(frames_behind - 1):
                                 if self.last_frame1 is not None and self.last_frame2 is not None:
-                                    # 使用上一帧，但更新时间码
-                                    dup_elapsed = elapsed - (frames_behind - 1 - i) * self.frame_interval
-                                    dup_timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                                    
-                                    dup_frame1_tc = self.add_timestamp(self.last_frame1, dup_timestamp_str, dup_elapsed)
-                                    dup_frame2_tc = self.add_timestamp(self.last_frame2, dup_timestamp_str, dup_elapsed)
-                                    
-                                    self.video_writer1.write(dup_frame1_tc)
-                                    self.video_writer2.write(dup_frame2_tc)
+                                    # 直接写入上一帧（无时间码）
+                                    self.video_writer1.write(self.last_frame1)
+                                    self.video_writer2.write(self.last_frame2)
                                     self.frame_count += 1
-                                    self.duplicated_frames += 1
-                                    
-                                    # 记录时间戳
-                                    self.frame_timestamps.append({
-                                        "frame_num": self.frame_count - 1,
-                                        "timestamp1": self.last_timestamp1,
-                                        "timestamp2": self.last_timestamp2,
-                                        "elapsed": dup_elapsed,
-                                        "datetime": dup_timestamp_str,
-                                        "is_duplicate": True
-                                    })
-                            
-                            self.dropped_frames += frames_behind - 1
-                        
-                        # 更新最后写入时间
-                        self.last_frame_time = current_time
-                        
-                        # 显示录制状态和帧率信息
-                        actual_fps = self.frame_count / elapsed if elapsed > 0 else 0
-                        status_text = f"REC {elapsed:.1f}s | {actual_fps:.1f}fps"
-                        drop_text = f"Drop: {self.dropped_frames} | Dup: {self.duplicated_frames}"
-                        
-                        cv2.putText(frame1, status_text, (frame1.shape[1] - 300, 30),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                        cv2.putText(frame1, drop_text, (frame1.shape[1] - 300, 60),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                        
-                        cv2.putText(frame2, status_text, (frame2.shape[1] - 300, 30),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                        cv2.putText(frame2, drop_text, (frame2.shape[1] - 300, 60),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    else:
-                        # 还没到写入时间，等待一小段时间
-                        next_frame_time = self.start_time + (self.frame_count + 1) * self.frame_interval
-                        sleep_time = next_frame_time - current_time
-                        if sleep_time > 0 and sleep_time < self.frame_interval:
-                            time.sleep(min(sleep_time, 0.01))  # 最多等待10ms
                 
-                # 显示帧
+                # 显示帧（无任何文字叠加）
                 cv2.imshow(window1, frame1)
                 cv2.imshow(window2, frame2)
                 
