@@ -293,17 +293,70 @@ def compare_focal_lengths(calibrator1, calibrator2):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='双相机棋盘格标定工具')
+    parser = argparse.ArgumentParser(
+        description='双相机棋盘格标定工具',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+square-size 参数说明:
+  square-size 是棋盘格每个方格的实际物理大小（单位：毫米）
+  
+  如何设置:
+  1. 使用尺子测量棋盘格中一个方格的边长
+  2. 多次测量取平均值（提高精度）
+  3. 将测量结果（单位：毫米）作为 square-size 的值
+  
+  示例:
+    测量结果: 25.0 mm  →  --square-size 25.0
+    测量结果: 20.5 mm  →  --square-size 20.5
+  
+  重要提示:
+  - 必须实际测量，不能猜测！
+  - 两个相机必须使用相同的 square-size
+  - 如果设置错误，会影响标定精度和后续测量
+  
+  详细说明请查看: square_size说明.md
+        """
+    )
     parser.add_argument('--camera1', type=int, default=0, help='第一个相机ID (默认: 0)')
     parser.add_argument('--camera2', type=int, default=1, help='第二个相机ID (默认: 1)')
     parser.add_argument('--name1', type=str, default='Camera1', help='第一个相机名称')
     parser.add_argument('--name2', type=str, default='Camera2', help='第二个相机名称')
     parser.add_argument('--chessboard', type=str, default='9x6', 
                        help='棋盘格内角点数量 (格式: width x height, 默认: 9x6)')
-    parser.add_argument('--square-size', type=float, default=25.0,
-                       help='棋盘格方格大小，单位：毫米 (默认: 25.0)')
+    parser.add_argument('--square-size', type=float, default=None,
+                       help='棋盘格方格大小，单位：毫米。如果未指定，将提示输入')
     
     args = parser.parse_args()
+    
+    # 如果没有指定 square-size，提示用户输入
+    if args.square_size is None:
+        print("\n" + "="*60)
+        print("square-size 参数未指定")
+        print("="*60)
+        print("\n请提供棋盘格方格的实际大小（单位：毫米）")
+        print("提示：使用尺子测量棋盘格中一个方格的边长")
+        print("\n示例：")
+        print("  如果测量结果是 25.0 毫米，请输入: 25.0")
+        print("  如果测量结果是 20.5 毫米，请输入: 20.5")
+        print()
+        
+        while True:
+            try:
+                user_input = input("请输入方格大小（毫米）: ").strip()
+                if user_input:
+                    args.square_size = float(user_input)
+                    if args.square_size > 0:
+                        print(f"✓ 已设置 square-size = {args.square_size} mm\n")
+                        break
+                    else:
+                        print("✗ 请输入大于0的数值\n")
+                else:
+                    print("✗ 输入不能为空\n")
+            except ValueError:
+                print("✗ 请输入有效的数字\n")
+            except KeyboardInterrupt:
+                print("\n\n已取消")
+                return
     
     # 解析棋盘格大小
     chessboard_size = tuple(map(int, args.chessboard.split('x')))
